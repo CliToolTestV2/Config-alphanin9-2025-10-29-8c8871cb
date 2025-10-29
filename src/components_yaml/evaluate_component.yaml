@@ -1,0 +1,115 @@
+# PIPELINE DEFINITION
+# Name: evaluate
+# Inputs:
+#    mlflow_tracking_uri: str
+#    run_id: str
+#    threshold_metrics: dict
+# Outputs:
+#    Output: bool
+components:
+  comp-evaluate:
+    executorLabel: exec-evaluate
+    inputDefinitions:
+      parameters:
+        mlflow_tracking_uri:
+          description: MLflow tracking URI
+          parameterType: STRING
+        run_id:
+          description: ' MLflow run ID'
+          parameterType: STRING
+        threshold_metrics:
+          description: Minimum threshold values for each metric
+          parameterType: STRUCT
+    outputDefinitions:
+      parameters:
+        Output:
+          parameterType: BOOLEAN
+deploymentSpec:
+  executors:
+    exec-evaluate:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - evaluate
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.10.0'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"'  &&\
+          \  python3 -m pip install --quiet --no-warn-script-location 'numpy' 'mlflow~=2.4.1'\
+          \ && \"$0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef evaluate(\n    run_id: str,\n    mlflow_tracking_uri: str,\n\
+          \    threshold_metrics: dict\n) -> bool:\n    \"\"\"\n    Evaluate component:\
+          \ Compares metrics from training with given thresholds.\n\n    Args:\n \
+          \       run_id (string):  MLflow run ID\n        mlflow_tracking_uri (string):\
+          \ MLflow tracking URI\n        threshold_metrics (dict): Minimum threshold\
+          \ values for each metric\n    Returns:\n        Bool indicating whether\
+          \ evaluation passed or failed.\n    \"\"\"\n    from mlflow.tracking import\
+          \ MlflowClient\n    import logging\n\n    logging.basicConfig(level=logging.INFO)\n\
+          \    logger = logging.getLogger(__name__)\n\n    client = MlflowClient(tracking_uri=mlflow_tracking_uri)\n\
+          \    info = client.get_run(run_id)\n    training_metrics = info.data.metrics\n\
+          \n    logger.info(f\"Training metrics: {training_metrics}\")\n\n    # compare\
+          \ the evaluation metrics with the defined thresholds\n    for key, value\
+          \ in threshold_metrics.items():\n        if key not in training_metrics\
+          \ or training_metrics[key] > value:\n            logger.error(f\"Metric\
+          \ {key} failed. Evaluation not passed!\")\n            return False\n  \
+          \  return True\n\n"
+        image: python:3.10
+pipelineInfo:
+  name: evaluate
+root:
+  dag:
+    outputs:
+      parameters:
+        Output:
+          valueFromParameter:
+            outputParameterKey: Output
+            producerSubtask: evaluate
+    tasks:
+      evaluate:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-evaluate
+        inputs:
+          parameters:
+            mlflow_tracking_uri:
+              componentInputParameter: mlflow_tracking_uri
+            run_id:
+              componentInputParameter: run_id
+            threshold_metrics:
+              componentInputParameter: threshold_metrics
+        taskInfo:
+          name: evaluate
+  inputDefinitions:
+    parameters:
+      mlflow_tracking_uri:
+        description: MLflow tracking URI
+        parameterType: STRING
+      run_id:
+        description: ' MLflow run ID'
+        parameterType: STRING
+      threshold_metrics:
+        description: Minimum threshold values for each metric
+        parameterType: STRUCT
+  outputDefinitions:
+    parameters:
+      Output:
+        parameterType: BOOLEAN
+schemaVersion: 2.1.0
+sdkVersion: kfp-2.10.0

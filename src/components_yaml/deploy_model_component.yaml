@@ -1,0 +1,92 @@
+# PIPELINE DEFINITION
+# Name: deploy-model
+# Inputs:
+#    model_name: str
+#    storage_uri: str
+components:
+  comp-deploy-model:
+    executorLabel: exec-deploy-model
+    inputDefinitions:
+      parameters:
+        model_name:
+          parameterType: STRING
+        storage_uri:
+          parameterType: STRING
+deploymentSpec:
+  executors:
+    exec-deploy-model:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - deploy_model
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.10.0'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"'  &&\
+          \  python3 -m pip install --quiet --no-warn-script-location 'kserve==0.11.0'\
+          \ && \"$0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef deploy_model(model_name: str, storage_uri: str):\n    \"\"\"\n\
+          \    Deploy the model as an inference service with Kserve.\n    \"\"\"\n\
+          \    import logging\n    from kubernetes import client\n    from kserve\
+          \ import KServeClient\n    from kserve import constants\n    from kserve\
+          \ import V1beta1InferenceService\n    from kserve import V1beta1InferenceServiceSpec\n\
+          \    from kserve import V1beta1PredictorSpec\n    from kserve import V1beta1SKLearnSpec\n\
+          \    from kubernetes.client import V1ResourceRequirements\n\n    logging.basicConfig(level=logging.INFO)\n\
+          \    logger = logging.getLogger(__name__)\n\n    model_uri = f\"{storage_uri}/{model_name}\"\
+          \n    logger.info(f\"MODEL URI: {model_uri}\")\n\n    namespace = 'kserve-inference'\n\
+          \    kserve_version='v1beta1'\n    api_version = constants.KSERVE_GROUP\
+          \ + '/' + kserve_version\n\n    isvc = V1beta1InferenceService(\n      \
+          \  api_version = api_version,\n        kind = constants.KSERVE_KIND,\n \
+          \       metadata = client.V1ObjectMeta(\n            name = model_name,\n\
+          \            namespace = namespace,\n            annotations = {'sidecar.istio.io/inject':'false'}\n\
+          \        ),\n        spec = V1beta1InferenceServiceSpec(\n            predictor=V1beta1PredictorSpec(\n\
+          \                service_account_name=\"kserve-sa\",\n                min_replicas=1,\n\
+          \                max_replicas = 1,\n                sklearn=V1beta1SKLearnSpec(\n\
+          \                    storage_uri=model_uri,\n                    resources=V1ResourceRequirements(\n\
+          \                        requests={\"cpu\": \"100m\", \"memory\": \"512Mi\"\
+          },\n                        limits={\"cpu\": \"300m\", \"memory\": \"512Mi\"\
+          }\n                    )\n                ),\n            )\n        )\n\
+          \    )\n    KServe = KServeClient()\n    KServe.create(isvc)\n\n"
+        image: python:3.9
+pipelineInfo:
+  name: deploy-model
+root:
+  dag:
+    tasks:
+      deploy-model:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-deploy-model
+        inputs:
+          parameters:
+            model_name:
+              componentInputParameter: model_name
+            storage_uri:
+              componentInputParameter: storage_uri
+        taskInfo:
+          name: deploy-model
+  inputDefinitions:
+    parameters:
+      model_name:
+        parameterType: STRING
+      storage_uri:
+        parameterType: STRING
+schemaVersion: 2.1.0
+sdkVersion: kfp-2.10.0

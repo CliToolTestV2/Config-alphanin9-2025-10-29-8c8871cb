@@ -1,0 +1,223 @@
+# PIPELINE DEFINITION
+# Name: train
+# Inputs:
+#    alpha: float
+#    l1_ratio: float
+#    mlflow_experiment_name: str
+#    mlflow_s3_endpoint_url: str
+#    mlflow_tracking_uri: str
+#    model_name: str
+#    target: str [Default: 'quality']
+#    test_set: system.Dataset
+#    train_set: system.Dataset
+# Outputs:
+#    run_id: str
+#    saved_model: system.Model
+#    storage_uri: str
+components:
+  comp-train:
+    executorLabel: exec-train
+    inputDefinitions:
+      artifacts:
+        test_set:
+          artifactType:
+            schemaTitle: system.Dataset
+            schemaVersion: 0.0.1
+        train_set:
+          artifactType:
+            schemaTitle: system.Dataset
+            schemaVersion: 0.0.1
+      parameters:
+        alpha:
+          parameterType: NUMBER_DOUBLE
+        l1_ratio:
+          parameterType: NUMBER_DOUBLE
+        mlflow_experiment_name:
+          parameterType: STRING
+        mlflow_s3_endpoint_url:
+          parameterType: STRING
+        mlflow_tracking_uri:
+          parameterType: STRING
+        model_name:
+          parameterType: STRING
+        target:
+          defaultValue: quality
+          isOptional: true
+          parameterType: STRING
+    outputDefinitions:
+      artifacts:
+        saved_model:
+          artifactType:
+            schemaTitle: system.Model
+            schemaVersion: 0.0.1
+      parameters:
+        run_id:
+          parameterType: STRING
+        storage_uri:
+          parameterType: STRING
+deploymentSpec:
+  executors:
+    exec-train:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - train
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.10.0'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"'  &&\
+          \  python3 -m pip install --quiet --no-warn-script-location 'numpy~=1.26.4'\
+          \ 'pandas~=1.4.2' 'scikit-learn~=1.0.2' 'mlflow~=2.4.1' 'boto3~=1.21.0'\
+          \ && \"$0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef train(\n    train_set: Input[Dataset],\n    test_set: Input[Dataset],\n\
+          \    saved_model: Output[Model],\n    mlflow_experiment_name: str,\n   \
+          \ mlflow_tracking_uri: str,\n    mlflow_s3_endpoint_url: str,\n    model_name:\
+          \ str,\n    alpha: float,\n    l1_ratio: float,\n    target: str = \"quality\"\
+          ,\n) -> NamedTuple(\"Output\", [('storage_uri', str), ('run_id', str),]):\n\
+          \n    \"\"\"\n    Train component.\n    \"\"\"\n    import numpy as np\n\
+          \    import pandas as pd\n    from sklearn.linear_model import ElasticNet\n\
+          \    from sklearn.metrics import mean_squared_error, mean_absolute_error,\
+          \ r2_score\n    import mlflow\n    import mlflow.sklearn\n    import os\n\
+          \    import logging\n    import pickle\n    from collections import namedtuple\n\
+          \n    logging.basicConfig(level=logging.INFO)\n    logger = logging.getLogger(__name__)\n\
+          \n    def eval_metrics(actual, pred):\n        rmse = np.sqrt(mean_squared_error(actual,\
+          \ pred))\n        mae = mean_absolute_error(actual, pred)\n        r2 =\
+          \ r2_score(actual, pred)\n        return rmse, mae, r2\n\n    os.environ['MLFLOW_S3_ENDPOINT_URL']\
+          \ = mlflow_s3_endpoint_url\n\n    # load data\n    train = pd.read_csv(train_set.path)\n\
+          \    test = pd.read_csv(test_set.path)\n\n    # The predicted column is\
+          \ \"quality\" which is a scalar from [3, 9]\n    train_x = train.drop([target],\
+          \ axis=1)\n    test_x = test.drop([target], axis=1)\n    train_y = train[[target]]\n\
+          \    test_y = test[[target]]\n\n    logger.info(f\"Using MLflow tracking\
+          \ URI: {mlflow_tracking_uri}\")\n    mlflow.set_tracking_uri(mlflow_tracking_uri)\n\
+          \n    logger.info(f\"Using MLflow experiment: {mlflow_experiment_name}\"\
+          )\n    mlflow.set_experiment(mlflow_experiment_name)\n\n    with mlflow.start_run()\
+          \ as run:\n\n        run_id = run.info.run_id\n        logger.info(f\"Run\
+          \ ID: {run_id}\")\n\n        model = ElasticNet(alpha=alpha, l1_ratio=l1_ratio,\
+          \ random_state=42)\n\n        logger.info(\"Fitting model...\")\n      \
+          \  model.fit(train_x, train_y)\n\n        logger.info(\"Predicting...\"\
+          )\n        predicted_qualities = model.predict(test_x)\n\n        (rmse,\
+          \ mae, r2) = eval_metrics(test_y, predicted_qualities)\n\n        logger.info(\"\
+          Elasticnet model (alpha=%f, l1_ratio=%f):\" % (alpha, l1_ratio))\n     \
+          \   logger.info(\"  RMSE: %s\" % rmse)\n        logger.info(\"  MAE: %s\"\
+          \ % mae)\n        logger.info(\"  R2: %s\" % r2)\n\n        logger.info(\"\
+          Logging parameters to MLflow\")\n        mlflow.log_param(\"alpha\", alpha)\n\
+          \        mlflow.log_param(\"l1_ratio\", l1_ratio)\n        mlflow.log_metric(\"\
+          rmse\", rmse)\n        mlflow.log_metric(\"r2\", r2)\n        mlflow.log_metric(\"\
+          mae\", mae)\n\n        # save model to mlflow\n        logger.info(\"Logging\
+          \ trained model\")\n        mlflow.sklearn.log_model(\n            model,\n\
+          \            model_name,\n            registered_model_name=\"ElasticnetWineModel\"\
+          ,\n            serialization_format=\"pickle\"\n        )\n\n        logger.info(\"\
+          Logging predictions artifact to MLflow\")\n        np.save(\"predictions.npy\"\
+          , predicted_qualities)\n        mlflow.log_artifact(\n        local_path=\"\
+          predictions.npy\", artifact_path=\"predicted_qualities/\"\n        )\n\n\
+          \        # save model as KFP artifact\n        logging.info(f\"Saving model\
+          \ to: {saved_model.path}\")\n        with open(saved_model.path, 'wb') as\
+          \ fp:\n            pickle.dump(model, fp, pickle.HIGHEST_PROTOCOL)\n\n \
+          \       # prepare output\n        output = namedtuple('Output', ['storage_uri',\
+          \ 'run_id'])\n\n        # return str(mlflow.get_artifact_uri())\n      \
+          \  return output(mlflow.get_artifact_uri(), run_id)\n\n"
+        image: python:3.10
+pipelineInfo:
+  name: train
+root:
+  dag:
+    outputs:
+      artifacts:
+        saved_model:
+          artifactSelectors:
+          - outputArtifactKey: saved_model
+            producerSubtask: train
+      parameters:
+        run_id:
+          valueFromParameter:
+            outputParameterKey: run_id
+            producerSubtask: train
+        storage_uri:
+          valueFromParameter:
+            outputParameterKey: storage_uri
+            producerSubtask: train
+    tasks:
+      train:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-train
+        inputs:
+          artifacts:
+            test_set:
+              componentInputArtifact: test_set
+            train_set:
+              componentInputArtifact: train_set
+          parameters:
+            alpha:
+              componentInputParameter: alpha
+            l1_ratio:
+              componentInputParameter: l1_ratio
+            mlflow_experiment_name:
+              componentInputParameter: mlflow_experiment_name
+            mlflow_s3_endpoint_url:
+              componentInputParameter: mlflow_s3_endpoint_url
+            mlflow_tracking_uri:
+              componentInputParameter: mlflow_tracking_uri
+            model_name:
+              componentInputParameter: model_name
+            target:
+              componentInputParameter: target
+        taskInfo:
+          name: train
+  inputDefinitions:
+    artifacts:
+      test_set:
+        artifactType:
+          schemaTitle: system.Dataset
+          schemaVersion: 0.0.1
+      train_set:
+        artifactType:
+          schemaTitle: system.Dataset
+          schemaVersion: 0.0.1
+    parameters:
+      alpha:
+        parameterType: NUMBER_DOUBLE
+      l1_ratio:
+        parameterType: NUMBER_DOUBLE
+      mlflow_experiment_name:
+        parameterType: STRING
+      mlflow_s3_endpoint_url:
+        parameterType: STRING
+      mlflow_tracking_uri:
+        parameterType: STRING
+      model_name:
+        parameterType: STRING
+      target:
+        defaultValue: quality
+        isOptional: true
+        parameterType: STRING
+  outputDefinitions:
+    artifacts:
+      saved_model:
+        artifactType:
+          schemaTitle: system.Model
+          schemaVersion: 0.0.1
+    parameters:
+      run_id:
+        parameterType: STRING
+      storage_uri:
+        parameterType: STRING
+schemaVersion: 2.1.0
+sdkVersion: kfp-2.10.0
