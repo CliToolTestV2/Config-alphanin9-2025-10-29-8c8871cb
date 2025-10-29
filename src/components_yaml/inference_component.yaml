@@ -1,0 +1,100 @@
+# PIPELINE DEFINITION
+# Name: inference
+# Inputs:
+#    model_name: str
+#    scaler_in: system.Artifact
+components:
+  comp-inference:
+    executorLabel: exec-inference
+    inputDefinitions:
+      artifacts:
+        scaler_in:
+          artifactType:
+            schemaTitle: system.Artifact
+            schemaVersion: 0.0.1
+      parameters:
+        model_name:
+          parameterType: STRING
+deploymentSpec:
+  executors:
+    exec-inference:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - inference
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.10.0'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"'  &&\
+          \  python3 -m pip install --quiet --no-warn-script-location 'kserve==0.11.0'\
+          \ 'scikit-learn~=1.0.2' && \"$0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef inference(\n    model_name: str,\n    scaler_in: Input[Artifact]\n\
+          ):\n    \"\"\"\n    Test inference.\n    \"\"\"\n    from kserve import\
+          \ KServeClient\n    import requests\n    import pickle\n    import logging\n\
+          \n    logging.basicConfig(level=logging.INFO)\n    logger = logging.getLogger(__name__)\n\
+          \n    namespace = 'kserve-inference'\n\n    input_sample = [[5.6, 0.54,\
+          \ 0.04, 1.7, 0.049, 5, 13, 0.9942, 3.72, 0.58, 11.4],\n                \
+          \    [11.3, 0.34, 0.45, 2, 0.082, 6, 15, 0.9988, 2.94, 0.66, 9.2]]\n\n \
+          \   logger.info(f\"Loading standard scaler from: {scaler_in.path}\")\n \
+          \   with open(scaler_in.path, 'rb') as fp:\n        scaler = pickle.load(fp)\n\
+          \n    logger.info(f\"Standardizing sample: {scaler_in.path}\")\n    input_sample\
+          \ = scaler.transform(input_sample)\n\n    # get inference service\n    KServe\
+          \ = KServeClient()\n\n    # wait for deployment to be ready\n    KServe.get(model_name,\
+          \ namespace=namespace, watch=True, timeout_seconds=120)\n\n    inference_service\
+          \ = KServe.get(model_name, namespace=namespace)\n    header = {\"Host\"\
+          : f\"{model_name}.{namespace}.example.com\"}\n    is_url = f\"http://istio-ingressgateway.istio-system.svc.cluster.local:80/v1/models/{model_name}:predict\"\
+          \n\n    logger.info(f\"\\nInference service status:\\n{inference_service['status']}\"\
+          )\n    logger.info(f\"\\nInference service URL:\\n{is_url}\\n\")\n\n   \
+          \ inference_input = {\n        'instances': input_sample.tolist()\n    }\n\
+          \    response = requests.post(\n        is_url,\n        json=inference_input,\n\
+          \        headers=header,\n    )\n    if response.status_code != 200:\n \
+          \       raise RuntimeError(f\"HTTP status code '{response.status_code}':\
+          \ {response.json()}\")\n\n    logger.info(f\"\\nPrediction response:\\n{response.json()}\\\
+          n\")\n\n"
+        image: python:3.9
+pipelineInfo:
+  name: inference
+root:
+  dag:
+    tasks:
+      inference:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-inference
+        inputs:
+          artifacts:
+            scaler_in:
+              componentInputArtifact: scaler_in
+          parameters:
+            model_name:
+              componentInputParameter: model_name
+        taskInfo:
+          name: inference
+  inputDefinitions:
+    artifacts:
+      scaler_in:
+        artifactType:
+          schemaTitle: system.Artifact
+          schemaVersion: 0.0.1
+    parameters:
+      model_name:
+        parameterType: STRING
+schemaVersion: 2.1.0
+sdkVersion: kfp-2.10.0
